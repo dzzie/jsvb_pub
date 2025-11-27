@@ -627,3 +627,278 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
 
 //no reason to duplicate the C code in VB when we have the dll loaded...
 extern "C" __declspec(dllexport) void __stdcall SendDbgMsg(char* str) {msg(str);}
+
+//method calls work for objects or regular return types (vb set limitation)
+/*
+extern "C" __declspec(dllexport)
+HRESULT __stdcall CallByNameEx(
+	IUnknown* pUnk,
+	const char* memberName,     // VB6 ByVal String -> char*
+	WORD invokeFlags,
+	VARIANT* pVarArgs,
+	VARIANT* pResult,
+	BOOL* pIsObject
+)
+{
+	msgf("[CallByNameEx] Entry: pUnk=%p name='%s' flags=%d", pUnk, memberName ? memberName : "(null)", invokeFlags);
+
+	if (!pUnk || !memberName || !pResult || !pIsObject) {
+		msgf("[CallByNameEx] E_POINTER: bad params");
+		return E_POINTER;
+	}
+
+	// QueryInterface for IDispatch
+	IDispatch* obj = nullptr;
+	HRESULT hr = pUnk->QueryInterface(IID_IDispatch, (void**)&obj);
+	msgf("[CallByNameEx] QueryInterface hr=0x%08X obj=%p", hr, obj);
+
+	if (FAILED(hr) || !obj) {
+		return E_NOINTERFACE;
+	}
+
+	VariantInit(pResult);
+	*pIsObject = FALSE;
+
+	// Convert ANSI to Unicode BSTR
+	int wlen = MultiByteToWideChar(CP_ACP, 0, memberName, -1, nullptr, 0);
+	BSTR wideName = SysAllocStringLen(nullptr, wlen - 1);
+	MultiByteToWideChar(CP_ACP, 0, memberName, -1, wideName, wlen);
+
+	// Extract SAFEARRAY from VARIANT
+	SAFEARRAY* args = nullptr;
+	if (pVarArgs && (pVarArgs->vt & VT_ARRAY)) {
+		args = pVarArgs->parray;
+		msgf("[CallByNameEx] Got array from VARIANT, vt=0x%X parray=%p", pVarArgs->vt, args);
+	}
+
+	// Get DISPID
+	DISPID dispid;
+	hr = obj->GetIDsOfNames(IID_NULL, &wideName, 1, LOCALE_USER_DEFAULT, &dispid);
+	msgf("[CallByNameEx] GetIDsOfNames hr=0x%08X dispid=%ld", hr, dispid);
+
+	if (FAILED(hr)) {
+		SysFreeString(wideName);
+		obj->Release();
+		return hr;
+	}
+
+	// Build DISPPARAMS
+	DISPPARAMS dp = { 0 };
+	if (args) {
+		LONG lb = 0, ub = 0;
+		SafeArrayGetLBound(args, 1, &lb);
+		SafeArrayGetUBound(args, 1, &ub);
+		LONG count = ub - lb + 1;
+		msgf("[CallByNameEx] Array bounds: lb=%ld ub=%ld count=%ld", lb, ub, count);
+
+		if (count > 0) {
+			dp.rgvarg = (VARIANTARG*)CoTaskMemAlloc(count * sizeof(VARIANTARG));
+			dp.cArgs = count;
+
+			// Go back to SafeArrayGetElement - it's safer
+			for (LONG i = 0; i < count; i++) {
+				VARIANT v;
+				VariantInit(&v);
+				LONG idx = lb + i;
+
+				HRESULT saHr = SafeArrayGetElement(args, &idx, &v);
+				msgf("[CallByNameEx] SafeArrayGetElement[%ld] hr=0x%08X vt=%d", i, saHr, v.vt);
+
+				if (SUCCEEDED(saHr)) {
+					VariantInit(&dp.rgvarg[count - 1 - i]);
+					VariantCopyInd(&dp.rgvarg[count - 1 - i], &v);
+					msgf("[CallByNameEx] Copied arg[%ld]", i);
+				}
+				else {
+					msgf("[CallByNameEx] ERROR: Failed to get element %ld", i);
+				}
+				VariantClear(&v);
+			}
+		}
+	}
+
+	// INVOKE
+	msgf("[CallByNameEx] Calling Invoke dispid=%ld flags=%d cArgs=%d...", dispid, invokeFlags, dp.cArgs);
+	hr = obj->Invoke(dispid, IID_NULL, LOCALE_USER_DEFAULT,
+		invokeFlags, &dp, pResult, nullptr, nullptr);
+	msgf("[CallByNameEx] Invoke hr=0x%08X result.vt=%d", hr, pResult->vt);
+
+	// Check if result is object
+	if (SUCCEEDED(hr)) {
+		*pIsObject = (pResult->vt == VT_DISPATCH ||
+			pResult->vt == VT_UNKNOWN ||
+			pResult->vt == (VT_BYREF | VT_DISPATCH) ||
+			pResult->vt == (VT_BYREF | VT_UNKNOWN));
+		msgf("[CallByNameEx] isObject=%d", *pIsObject);
+	}
+
+	// Cleanup
+	if (dp.rgvarg) {
+		for (UINT i = 0; i < dp.cArgs; i++) {
+			VariantClear(&dp.rgvarg[i]);
+		}
+		CoTaskMemFree(dp.rgvarg);
+	}
+
+	SysFreeString(wideName);
+
+	msgf("[CallByNameEx] Exit hr=0x%08X", hr);
+	return hr;
+}
+*/
+
+extern "C" __declspec(dllexport)
+HRESULT __stdcall CallByNameEx(
+	IUnknown* pUnk,
+	const char* memberName,
+	WORD invokeFlags,
+	void* pArgsOrVariant,
+	VARIANT* pResult,
+	VARIANT_BOOL* pIsObject
+)
+{
+	msgf("[CallByNameEx] Entry: pUnk=%p name='%s' flags=%d pResult=%p", pUnk, memberName ? memberName : "(null)", invokeFlags, pResult);
+
+	if (!pUnk || !memberName || !pResult || !pIsObject) {
+		msgf("[CallByNameEx] E_POINTER: bad params");
+		return E_POINTER;
+	}
+
+	IDispatch* obj = nullptr;
+	HRESULT hr = pUnk->QueryInterface(IID_IDispatch, (void**)&obj);
+	msgf("[CallByNameEx] QueryInterface hr=0x%08X obj=%p", hr, obj);
+
+	if (FAILED(hr) || !obj) return E_NOINTERFACE;
+
+	// DON'T clear pResult - let Invoke write to it directly
+	msgf("[CallByNameEx] Before operations: pResult=%p vt=%d", pResult, pResult->vt);
+	*pIsObject = FALSE;
+
+	int wlen = MultiByteToWideChar(CP_ACP, 0, memberName, -1, nullptr, 0);
+	BSTR wideName = SysAllocStringLen(nullptr, wlen - 1);
+	MultiByteToWideChar(CP_ACP, 0, memberName, -1, wideName, wlen);
+
+	DISPID dispid;
+	hr = obj->GetIDsOfNames(IID_NULL, &wideName, 1, LOCALE_USER_DEFAULT, &dispid);
+	msgf("[CallByNameEx] GetIDsOfNames hr=0x%08X dispid=%ld", hr, dispid);
+
+	if (FAILED(hr)) {
+		SysFreeString(wideName);
+		obj->Release();
+		return hr;
+	}
+
+	// Detect array type
+	SAFEARRAY* args = nullptr;
+	SAFEARRAY** ppArgs = (SAFEARRAY**)pArgsOrVariant;
+
+	if (ppArgs && *ppArgs) {
+		SAFEARRAY* candidate = *ppArgs;
+		msgf("[CallByNameEx] Trying as SAFEARRAY**: %p cDims=%d", candidate, candidate->cDims);
+		if (candidate->cDims > 0) {
+			args = candidate;
+			msgf("[CallByNameEx] SUCCESS: Valid SAFEARRAY**");
+		}
+	}
+
+	if (!args) {
+		VARIANT* pVar = (VARIANT*)pArgsOrVariant;
+		msgf("[CallByNameEx] Trying as VARIANT*: vt=0x%X", pVar->vt);
+		if ((pVar->vt & VT_ARRAY) == VT_ARRAY) {
+			args = pVar->parray;
+			msgf("[CallByNameEx] SUCCESS: Extracted from VARIANT");
+		}
+	}
+
+	if (!args) {
+		msgf("[CallByNameEx] WARNING: No valid array found, proceeding with 0 args");
+	}
+
+	// Build DISPPARAMS
+	DISPPARAMS dp = { 0 };
+	VARIANTARG* pAllocatedArgs = nullptr;
+	DISPID dispidNamed = DISPID_PROPERTYPUT;  // <--- ADD THIS
+
+	if (args) {
+		LONG lb = 0, ub = 0;
+		SafeArrayGetLBound(args, 1, &lb);
+		SafeArrayGetUBound(args, 1, &ub);
+		LONG count = ub - lb + 1;
+		msgf("[CallByNameEx] Array bounds: lb=%ld ub=%ld count=%ld", lb, ub, count);
+
+		if (count > 0) {
+			pAllocatedArgs = (VARIANTARG*)CoTaskMemAlloc(count * sizeof(VARIANTARG));
+			if (!pAllocatedArgs) {
+				msgf("[CallByNameEx] E_OUTOFMEMORY");
+				SysFreeString(wideName);
+				obj->Release();
+				return E_OUTOFMEMORY;
+			}
+
+			dp.rgvarg = pAllocatedArgs;
+			dp.cArgs = count;
+
+			//For property put, mark the value argument
+			if (invokeFlags & (DISPATCH_PROPERTYPUT | DISPATCH_PROPERTYPUTREF)) {
+				dp.rgdispidNamedArgs = &dispidNamed;
+				dp.cNamedArgs = 1;
+				msgf("[CallByNameEx] Property put/putref - setting named arg");
+			}
+
+			for (LONG i = 0; i < count; i++) {
+				VariantInit(&dp.rgvarg[i]);
+			}
+
+			for (LONG i = 0; i < count; i++) {
+				VARIANT v;
+				VariantInit(&v);
+				LONG idx = lb + i;
+
+				HRESULT saHr = SafeArrayGetElement(args, &idx, &v);
+				msgf("[CallByNameEx] arg[%ld] hr=0x%08X vt=%d", i, saHr, v.vt);
+
+				if (SUCCEEDED(saHr)) {
+					hr = VariantCopyInd(&dp.rgvarg[count - 1 - i], &v);
+					if (FAILED(hr)) {
+						msgf("[CallByNameEx] VariantCopyInd failed hr=0x%08X", hr);
+					}
+				}
+				VariantClear(&v);
+			}
+		}
+	}
+
+	msgf("[CallByNameEx] Before Invoke: pResult=%p vt=%d", pResult, pResult->vt);
+	msgf("[CallByNameEx] Calling Invoke dispid=%ld flags=%d cArgs=%d...", dispid, invokeFlags, dp.cArgs);
+
+	hr = obj->Invoke(dispid, IID_NULL, LOCALE_USER_DEFAULT, invokeFlags, &dp, pResult, nullptr, nullptr);
+
+	msgf("[CallByNameEx] After Invoke: hr=0x%08X pResult=%p vt=%d", hr, pResult, pResult ? pResult->vt : -1);
+
+	if (SUCCEEDED(hr) && pResult) {
+		*pIsObject = (pResult->vt == VT_DISPATCH || pResult->vt == VT_UNKNOWN);
+		msgf("[CallByNameEx] isObject=%d pResult->vt=%d", *pIsObject, pResult->vt);
+
+		if (pResult->vt == VT_DISPATCH) {
+			msgf("[CallByNameEx] result.pdispVal=%p", pResult->pdispVal);
+		}
+	}
+
+	msgf("[CallByNameEx] Before cleanup: pResult=%p vt=%d", pResult, pResult ? pResult->vt : -1);
+
+	// Cleanup
+	if (pAllocatedArgs) {
+		for (UINT i = 0; i < dp.cArgs; i++) {
+			VariantClear(&pAllocatedArgs[i]);
+		}
+		CoTaskMemFree(pAllocatedArgs);
+	}
+
+	SysFreeString(wideName);
+	obj->Release();
+
+	msgf("[CallByNameEx] After cleanup: pResult=%p vt=%d", pResult, pResult ? pResult->vt : -1);
+	msgf("[CallByNameEx] Exit hr=0x%08X", hr);
+
+	return hr;
+}

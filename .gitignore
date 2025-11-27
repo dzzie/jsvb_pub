@@ -38,4 +38,5 @@ old_*
 new_*
 *.ipch
 Browse.VC.db
-
+/dynproxy/Release/*
+/dynproxy/.vs/*

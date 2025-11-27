@@ -1209,6 +1209,7 @@ Private Function EvaluateExpression(Node As CNode) As CValue
 End Function
 
 ' === EVALUATE LOGICAL EXPRESSION (&&, ||) ===
+
 Private Function EvaluateLogical(Node As CNode) As CValue
     Dim result As New CValue
     
@@ -2652,46 +2653,92 @@ End Function
 Private Function GetCOMProperty(comObj As Object, propName As String) As CValue
     On Error GoTo ErrorHandler
     
-    Dim result As New CValue
-    
-    ' Try to get as object first
-    Dim propObj As Object
-    On Error Resume Next
-    Set propObj = CallByName(comObj, propName, VbGet)
-    
-    If Err.Number = 0 And Not propObj Is Nothing Then
-        ' It's an object
-        result.vType = vtCOMObject
-        Set result.objVal = propObj
-    Else
-        ' Try as value
-        Err.Clear
-        Dim propVal As Variant
-        propVal = CallByName(comObj, propName, VbGet)
-        
-        If Err.Number <> 0 Then
-            ' Try as method instead (parameterless method)
-            Err.Clear
-            propVal = CallByName(comObj, propName, VbMethod)
-        End If
-        
-        If Err.Number = 0 Then
-            Set result = VariantToCValue(propVal)
-        Else
-            result.vType = vtUndefined
-        End If
+    If Not ensureDynProxy() Then
+        RaiseEvent OnError("GetCOMProperty: Dynproxy not found", 0, "GetCOMProperty", 0)
+        Exit Function
     End If
-    On Error GoTo 0
+    
+    Dim resultVar As Variant
+    Dim isObj As Boolean
+    Dim hr As Long
+    Dim result As New CValue
+    Dim emptyArgs() As Variant
+    
+    ReDim emptyArgs(0 To -1)  ' Empty array for no arguments
+    
+    ' Try PROPERTYGET
+    hr = CallByNameEx(comObj, propName, DISPATCH_PROPERTYGET, emptyArgs, resultVar, isObj)
+    
+    ' If that failed, try METHOD (for parameterless methods that act like properties)
+    If hr <> 0 Then
+        hr = CallByNameEx(comObj, propName, DISPATCH_METHOD, emptyArgs, resultVar, isObj)
+    End If
+    
+    ' Convert result
+    If hr = 0 Then  ' S_OK
+        If isObj Then
+            result.vType = vtCOMObject
+            Set result.objVal = resultVar
+        Else
+            Set result = VariantToCValue(resultVar)
+        End If
+    Else
+        ' Property doesn't exist or error
+        result.vType = vtUndefined
+    End If
     
     Set GetCOMProperty = result
     Exit Function
     
 ErrorHandler:
-    ' Property doesn't exist or error - return undefined
     Dim undef As New CValue
     undef.vType = vtUndefined
     Set GetCOMProperty = undef
 End Function
+
+'Private Function GetCOMProperty(comObj As Object, propName As String) As CValue
+'    On Error GoTo ErrorHandler
+'
+'    Dim result As New CValue
+'
+'    ' Try to get as object first
+'    Dim propObj As Object
+'    On Error Resume Next
+'    Set propObj = CallByName(comObj, propName, VbGet)
+'
+'    If Err.Number = 0 And Not propObj Is Nothing Then
+'        ' It's an object
+'        result.vType = vtCOMObject
+'        Set result.objVal = propObj
+'    Else
+'        ' Try as value
+'        Err.Clear
+'        Dim propVal As Variant
+'        propVal = CallByName(comObj, propName, VbGet)
+'
+'        If Err.Number <> 0 Then
+'            ' Try as method instead (parameterless method)
+'            Err.Clear
+'            propVal = CallByName(comObj, propName, VbMethod)
+'        End If
+'
+'        If Err.Number = 0 Then
+'            Set result = VariantToCValue(propVal)
+'        Else
+'            result.vType = vtUndefined
+'        End If
+'    End If
+'    On Error GoTo 0
+'
+'    Set GetCOMProperty = result
+'    Exit Function
+'
+'ErrorHandler:
+'    ' Property doesn't exist or error - return undefined
+'    Dim undef As New CValue
+'    undef.vType = vtUndefined
+'    Set GetCOMProperty = undef
+'End Function
 
 
 Private Function VariantToCValue(v As Variant) As CValue
@@ -2766,7 +2813,7 @@ Private Function VariantToCValue(v As Variant) As CValue
         Case Else:
             ' Unknown type - try to treat as object
             On Error Resume Next
-            If IsObject(v) Then
+            If isObject(v) Then
                 result.vType = vtCOMObject
                 Set result.objVal = v
             Else
@@ -2816,114 +2863,13 @@ Private Function CValueToVariant(val As CValue) As Variant
     End Select
 End Function
 
-'Private Function CallCOMMethod(comObj As Object, methodName As String, args As Collection) As CValue
-'    On Error GoTo ErrorHandler
-'
-'    ' Convert arguments to Variant array
-'    Dim vArgs() As Variant
-'    Dim i As Long
-'
-'    If args.Count > 0 Then
-'        ReDim vArgs(1 To args.Count)
-'        For i = 1 To args.Count
-'            Dim arg As CNode
-'            Set arg = args(i)
-'
-'            Dim argVal As CValue
-'            Set argVal = EvaluateExpression(arg)
-'
-'            vArgs(i) = CValueToVariant(argVal)
-'        Next
-'    End If
-'
-'    ' Call the method using CallByName
-'    ' CRITICAL: Try to get object reference first, fall back to value
-'    Dim resultObj As Object
-'    Dim resultVal As Variant
-'    Dim isObject As Boolean
-'
-'    ' Try getting as object first
-'    On Error Resume Next
-'    If args.Count = 0 Then
-'        Set resultObj = CallByName(comObj, methodName, VbMethod)
-'    Else
-'        Select Case args.Count
-'            Case 1:
-'                Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1))
-'            Case 2:
-'                Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2))
-'            Case 3:
-'                Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3))
-'            Case 4:
-'                Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
-'            Case 5:
-'                Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
-'        End Select
-'    End If
-'
-'    If Err.Number = 0 And Not resultObj Is Nothing Then
-'        ' Success! It's an object
-'        isObject = True
-'    Else
-'        ' Not an object, try getting as value
-'        Err.Clear
-'        isObject = False
-'
-'        If args.Count = 0 Then
-'            resultVal = CallByName(comObj, methodName, VbMethod)
-'        Else
-'            Select Case args.Count
-'                Case 1:
-'                    resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1))
-'                Case 2:
-'                    resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2))
-'                Case 3:
-'                    resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3))
-'                Case 4:
-'                    resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
-'                Case 5:
-'                    resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
-'            End Select
-'        End If
-'    End If
-'    On Error GoTo 0
-'
-'    ' Convert result back to CValue
-'    Dim result As CValue
-'
-'    If isObject Then
-'        Set result = New CValue
-'        result.vType = vtCOMObject
-'        Set result.objVal = resultObj
-'    Else
-'        Set result = VariantToCValue(resultVal)
-'    End If
-'
-'    ' Right before the return:
-'    Debug.Print ">>> CallCOMMethod returning CValue type: " & result.vType
-'    If result.vType = vtCOMObject Then
-'        Debug.Print ">>> objVal Is Nothing: " & (result.objVal Is Nothing)
-'        If Not result.objVal Is Nothing Then
-'            Debug.Print ">>> objVal TypeName: " & TypeName(result.objVal)
-'        End If
-'    End If
-'
-'    Set CallCOMMethod = result
-'    Exit Function
-'
-'ErrorHandler:
-'    ' Method call failed - return undefined
-'    Dim undef As New CValue
-'    undef.vType = vtUndefined
-'    Set CallCOMMethod = undef
-'End Function
-
 Private Function CallCOMMethod(comObj As Object, methodName As String, args As Collection) As CValue
     On Error GoTo ErrorHandler
     
-    ' Convert arguments to Variant array
-    Dim vArgs() As Variant
-    Dim i As Long
+    If Not ensureDynProxy() Then
+        RaiseEvent OnError("CallCOMMethod: Dynproxy not found", 0, "", 0)
+        Exit Function
+    End If
     
     ' Audit logging
     If AuditMode Then
@@ -2935,7 +2881,6 @@ Private Function CallCOMMethod(comObj As Object, methodName As String, args As C
         Dim auditMsg As String
         auditMsg = objType & "." & methodName & "("
         
-        ' Add first argument if present
         If args.count > 0 Then
             Dim firstArg As CNode
             Set firstArg = args(1)
@@ -2948,136 +2893,48 @@ Private Function CallCOMMethod(comObj As Object, methodName As String, args As C
         RaiseAudit aeCOMCall, auditMsg
     End If
     
+    ' Convert arguments to Variant array
+    Dim vArgs() As Variant
+    Dim i As Long
     
     If args.count > 0 Then
-        ReDim vArgs(1 To args.count)
+        ReDim vArgs(0 To args.count - 1)
         For i = 1 To args.count
             Dim arg As CNode
             Set arg = args(i)
-            
             Dim argVal As CValue
             Set argVal = EvaluateExpression(arg)
-            
-            vArgs(i) = CValueToVariant(argVal)
+            vArgs(i - 1) = CValueToVariant(argVal)
         Next
+    Else
+        ReDim vArgs(0 To -1)  ' Empty array
     End If
     
-    ' CRITICAL: Try VbGet first (parameterized property), then VbMethod
-    Dim resultObj As Object
-    Dim resultVal As Variant
-    Dim gotObject As Boolean
-    Dim gotValue As Boolean
+    ' Try different invoke types - order matters!
+    Dim resultVar As Variant
+    Dim isObj As Boolean
+    Dim hr As Long
     
-    ' Try getting as object using VbGet (for parameterized properties like Environment)
-    On Error Resume Next
-    Err.Clear
+    ' 1. Try PROPERTYGET first (handles parameterized properties like Environment("PATH"))
+    hr = CallByNameEx(comObj, methodName, DISPATCH_PROPERTYGET, vArgs, resultVar, isObj)
     
-    'Debug.Print ">>> Trying VbGet first..."
-    If args.count = 0 Then
-        Set resultObj = CallByName(comObj, methodName, VbGet)
-    ElseIf args.count = 1 Then
-        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1))
-    ElseIf args.count = 2 Then
-        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2))
-    ElseIf args.count = 3 Then
-        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3))
-    ElseIf args.count = 4 Then
-        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
-    ElseIf args.count = 5 Then
-        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
+    ' 2. If that failed, try METHOD
+    If hr <> 0 Then
+        hr = CallByNameEx(comObj, methodName, DISPATCH_METHOD, vArgs, resultVar, isObj)
     End If
     
-    gotObject = (Err.Number = 0 And Not resultObj Is Nothing)
-    'Debug.Print ">>> VbGet result: Err=" & Err.Number & ", gotObject=" & gotObject
-    Err.Clear
-    On Error GoTo 0
-    
-    ' If VbGet didn't work, try VbMethod
-    If Not gotObject Then
-        On Error Resume Next
-        Err.Clear
-        
-        'Debug.Print ">>> Trying VbMethod..."
-        If args.count = 0 Then
-            Set resultObj = CallByName(comObj, methodName, VbMethod)
-        ElseIf args.count = 1 Then
-            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1))
-        ElseIf args.count = 2 Then
-            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2))
-        ElseIf args.count = 3 Then
-            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3))
-        ElseIf args.count = 4 Then
-            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
-        ElseIf args.count = 5 Then
-            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
-        End If
-        
-        gotObject = (Err.Number = 0 And Not resultObj Is Nothing)
-        'Debug.Print ">>> VbMethod result: Err=" & Err.Number & ", gotObject=" & gotObject
-        Err.Clear
-        On Error GoTo 0
-    End If
-    
-    ' If still didn't get object, try getting as value
-    If Not gotObject Then
-        On Error Resume Next
-        Err.Clear
-        
-        'Debug.Print ">>> Trying value with VbGet..."
-        If args.count = 0 Then
-            resultVal = CallByName(comObj, methodName, VbGet)
-        ElseIf args.count = 1 Then
-            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1))
-        ElseIf args.count = 2 Then
-            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2))
-        ElseIf args.count = 3 Then
-            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3))
-        ElseIf args.count = 4 Then
-            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
-        ElseIf args.count = 5 Then
-            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
-        End If
-        
-        gotValue = (Err.Number = 0)
-        'Debug.Print ">>> VbGet value result: Err=" & Err.Number & ", gotValue=" & gotValue
-        
-        ' If VbGet didn't work, try VbMethod
-        If Not gotValue Then
-            Err.Clear
-            'Debug.Print ">>> Trying value with VbMethod..."
-            If args.count = 0 Then
-                resultVal = CallByName(comObj, methodName, VbMethod)
-            ElseIf args.count = 1 Then
-                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1))
-            ElseIf args.count = 2 Then
-                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2))
-            ElseIf args.count = 3 Then
-                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3))
-            ElseIf args.count = 4 Then
-                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
-            ElseIf args.count = 5 Then
-                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
-            End If
-            gotValue = (Err.Number = 0)
-            'Debug.Print ">>> VbMethod value result: Err=" & Err.Number & ", gotValue=" & gotValue
-        End If
-        
-        Err.Clear
-        On Error GoTo 0
-    End If
-    
-    ' Build result
+    ' Convert result to CValue
     Dim result As New CValue
     
-    If gotObject Then
-        'Debug.Print ">>> Got object: " & TypeName(resultObj)
-        result.vType = vtCOMObject
-        Set result.objVal = resultObj
-    ElseIf gotValue Then
-        'Debug.Print ">>> Got value: " & VarType(resultVal)
-        Set result = VariantToCValue(resultVal)
+    If hr = 0 Then  ' S_OK
+        If isObj Then
+            result.vType = vtCOMObject
+            Set result.objVal = resultVar
+        Else
+            Set result = VariantToCValue(resultVar)
+        End If
     Else
-        'Debug.Print ">>> Got nothing!"
+        ' Call failed - return undefined
         result.vType = vtUndefined
     End If
     
@@ -3085,21 +2942,231 @@ Private Function CallCOMMethod(comObj As Object, methodName As String, args As C
     Exit Function
     
 ErrorHandler:
-    'Debug.Print ">>> CallCOMMethod ERROR: " & Err.Description
     Dim undef As New CValue
     undef.vType = vtUndefined
     Set CallCOMMethod = undef
 End Function
 
+'this brute force technique can call functions twice!
+'Private Function CallCOMMethod(comObj As Object, methodName As String, args As Collection) As CValue
+'    On Error GoTo ErrorHandler
+'
+'    ' Convert arguments to Variant array
+'    Dim vArgs() As Variant
+'    Dim i As Long
+'
+'    ' Audit logging
+'    If AuditMode Then
+'        Dim objType As String
+'        On Error Resume Next
+'        objType = TypeName(comObj)
+'        On Error GoTo ErrorHandler
+'
+'        Dim auditMsg As String
+'        auditMsg = objType & "." & methodName & "("
+'
+'        ' Add first argument if present
+'        If args.count > 0 Then
+'            Dim firstArg As CNode
+'            Set firstArg = args(1)
+'            Dim firstArgVal As CValue
+'            Set firstArgVal = EvaluateExpression(firstArg)
+'            auditMsg = auditMsg & Chr(34) & firstArgVal.ToString() & Chr(34)
+'        End If
+'        auditMsg = auditMsg & ")"
+'
+'        RaiseAudit aeCOMCall, auditMsg
+'    End If
+'
+'
+'    If args.count > 0 Then
+'        ReDim vArgs(1 To args.count)
+'        For i = 1 To args.count
+'            Dim arg As CNode
+'            Set arg = args(i)
+'
+'            Dim argVal As CValue
+'            Set argVal = EvaluateExpression(arg)
+'
+'            vArgs(i) = CValueToVariant(argVal)
+'        Next
+'    End If
+'
+'    ' CRITICAL: Try VbGet first (parameterized property), then VbMethod
+'    Dim resultObj As Object
+'    Dim resultVal As Variant
+'    Dim gotObject As Boolean
+'    Dim gotValue As Boolean
+'
+'    ' Try getting as object using VbGet (for parameterized properties like Environment)
+'    On Error Resume Next
+'    Err.Clear
+'
+'    'Debug.Print ">>> Trying VbGet first..."
+'    If args.count = 0 Then
+'        Set resultObj = CallByName(comObj, methodName, VbGet)
+'    ElseIf args.count = 1 Then
+'        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1))
+'    ElseIf args.count = 2 Then
+'        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2))
+'    ElseIf args.count = 3 Then
+'        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3))
+'    ElseIf args.count = 4 Then
+'        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
+'    ElseIf args.count = 5 Then
+'        Set resultObj = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
+'    End If
+'
+'    gotObject = (Err.Number = 0 And Not resultObj Is Nothing)
+'    'Debug.Print ">>> VbGet result: Err=" & Err.Number & ", gotObject=" & gotObject
+'    Err.Clear
+'    On Error GoTo 0
+'
+'    ' If VbGet didn't work, try VbMethod
+'    If Not gotObject Then
+'        On Error Resume Next
+'        Err.Clear
+'
+'        'Debug.Print ">>> Trying VbMethod..."
+'        If args.count = 0 Then
+'            Set resultObj = CallByName(comObj, methodName, VbMethod)
+'        ElseIf args.count = 1 Then
+'            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1))
+'        ElseIf args.count = 2 Then
+'            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2))
+'        ElseIf args.count = 3 Then
+'            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3))
+'        ElseIf args.count = 4 Then
+'            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
+'        ElseIf args.count = 5 Then
+'            Set resultObj = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
+'        End If
+'
+'        gotObject = (Err.Number = 0 And Not resultObj Is Nothing)
+'        'Debug.Print ">>> VbMethod result: Err=" & Err.Number & ", gotObject=" & gotObject
+'        Err.Clear
+'        On Error GoTo 0
+'    End If
+'
+'    ' If still didn't get object, try getting as value
+'    If Not gotObject Then
+'        On Error Resume Next
+'        Err.Clear
+'
+'        'Debug.Print ">>> Trying value with VbGet..."
+'        If args.count = 0 Then
+'            resultVal = CallByName(comObj, methodName, VbGet)
+'        ElseIf args.count = 1 Then
+'            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1))
+'        ElseIf args.count = 2 Then
+'            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2))
+'        ElseIf args.count = 3 Then
+'            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3))
+'        ElseIf args.count = 4 Then
+'            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
+'        ElseIf args.count = 5 Then
+'            resultVal = CallByName(comObj, methodName, VbGet, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
+'        End If
+'
+'        gotValue = (Err.Number = 0)
+'        'Debug.Print ">>> VbGet value result: Err=" & Err.Number & ", gotValue=" & gotValue
+'
+'        ' If VbGet didn't work, try VbMethod
+'        If Not gotValue Then
+'            Err.Clear
+'            'Debug.Print ">>> Trying value with VbMethod..."
+'            If args.count = 0 Then
+'                resultVal = CallByName(comObj, methodName, VbMethod)
+'            ElseIf args.count = 1 Then
+'                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1))
+'            ElseIf args.count = 2 Then
+'                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2))
+'            ElseIf args.count = 3 Then
+'                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3))
+'            ElseIf args.count = 4 Then
+'                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4))
+'            ElseIf args.count = 5 Then
+'                resultVal = CallByName(comObj, methodName, VbMethod, vArgs(1), vArgs(2), vArgs(3), vArgs(4), vArgs(5))
+'            End If
+'            gotValue = (Err.Number = 0)
+'            'Debug.Print ">>> VbMethod value result: Err=" & Err.Number & ", gotValue=" & gotValue
+'        End If
+'
+'        Err.Clear
+'        On Error GoTo 0
+'    End If
+'
+'    ' Build result
+'    Dim result As New CValue
+'
+'    If gotObject Then
+'        'Debug.Print ">>> Got object: " & TypeName(resultObj)
+'        result.vType = vtCOMObject
+'        Set result.objVal = resultObj
+'    ElseIf gotValue Then
+'        'Debug.Print ">>> Got value: " & VarType(resultVal)
+'        Set result = VariantToCValue(resultVal)
+'    Else
+'        'Debug.Print ">>> Got nothing!"
+'        result.vType = vtUndefined
+'    End If
+'
+'    Set CallCOMMethod = result
+'    Exit Function
+'
+'ErrorHandler:
+'    'Debug.Print ">>> CallCOMMethod ERROR: " & Err.Description
+'    Dim undef As New CValue
+'    undef.vType = vtUndefined
+'    Set CallCOMMethod = undef
+'End Function
+
 
 ' NEW: Set COM property
+'Private Sub SetCOMProperty(comObj As Object, propName As String, Value As CValue)
+'    On Error Resume Next
+'
+'    Dim v As Variant
+'    v = CValueToVariant(Value)
+'
+'    CallByName comObj, propName, VbLet, v
+'
+'    On Error GoTo 0
+'End Sub
+
 Private Sub SetCOMProperty(comObj As Object, propName As String, Value As CValue)
     On Error Resume Next
     
+    If Not ensureDynProxy() Then
+        RaiseEvent OnError("SetCOMProperty: Dynproxy not found", 0, "SetCOMProperty", 0)
+        Exit Sub
+    End If
+    
     Dim v As Variant
+    Dim args() As Variant
+    Dim resultVar As Variant
+    Dim isObj As Boolean
+    Dim hr As Long
+    Dim invokeType As Integer
+    
+    ' Convert CValue to Variant
     v = CValueToVariant(Value)
     
-    CallByName comObj, propName, VbLet, v
+    ' Determine if we're setting an object or a value
+    If Value.vType = vtCOMObject Or Value.vType = vtObject Then
+        invokeType = DISPATCH_PROPERTYPUTREF  ' Property Set
+    Else
+        invokeType = DISPATCH_PROPERTYPUT      ' Property Let
+    End If
+    
+    ' Create args array with the value to assign
+    ReDim args(0 To 0)
+    args(0) = v
+    
+    ' Set the property
+    hr = CallByNameEx(comObj, propName, invokeType, args, resultVar, isObj)
+    
+    ' Ignore errors (On Error Resume Next behavior maintained)
     
     On Error GoTo 0
 End Sub

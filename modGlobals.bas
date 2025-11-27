@@ -27,7 +27,21 @@ Public Declare Function CreateProxyForObjectRawEx Lib "dynproxy.dll" (ByVal inne
 Public Declare Sub SetProxyOverride Lib "dynproxy.dll" (ByVal proxyPtr As Long, ByVal nameBSTR As Long, ByVal dispid As Long)
 Public Declare Function ComTypeName Lib "dynproxy.dll" (ByVal obj As IUnknown) As Variant
 Public Declare Sub SendDbgMsg Lib "dynproxy.dll" (ByVal msg As String)   'to the PersistantDbgPrint window
-    
+
+Public Declare Function CallByNameEx Lib "dynproxy.dll" ( _
+    ByVal obj As IUnknown, _
+    ByVal memberName As String, _
+    ByVal invokeFlags As Integer, _
+    ByRef args() As Variant, _
+    ByRef result As Variant, _
+    ByRef isObject As Boolean _
+) As Long
+
+Public Const DISPATCH_METHOD = 1
+Public Const DISPATCH_PROPERTYGET = 2
+Public Const DISPATCH_PROPERTYPUT = 4
+Public Const DISPATCH_PROPERTYPUTREF = 8
+
 Public Declare Function LoadLibrary Lib "kernel32" Alias "LoadLibraryA" (ByVal lpLibFileName As String) As Long
 Public Declare Function FreeLibrary Lib "kernel32" (ByVal hLibModule As Long) As Long
 

@@ -52,7 +52,7 @@ Begin VB.Form Form1
          Strikethrough   =   0   'False
       EndProperty
       Height          =   2085
-      Left            =   45
+      Left            =   60
       MultiLine       =   -1  'True
       ScrollBars      =   3  'Both
       TabIndex        =   2
@@ -182,6 +182,12 @@ Private Sub Form_Load()
     End If
 
 End Sub
+
+Function t(data)
+    txtOut.Text = txtOut.Text & data & vbCrLf
+    txtOut.SelStart = Len(txtOut.Text)
+    DoEvents
+End Function
 
 Private Sub Form_Unload(cancel As Integer)
     On Error Resume Next
