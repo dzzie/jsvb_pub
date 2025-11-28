@@ -1,3 +1,4 @@
+parse
 callbyname
 HandleConsoleLog
 Set callback = arg.objVal

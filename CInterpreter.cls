@@ -2955,8 +2955,13 @@ Private Function CallCOMMethod(comObj As Object, methodName As String, args As C
     
     If hr = 0 Then  ' S_OK
         If isObj Then
-            result.vType = vtCOMObject
-            Set result.objVal = resultVar
+           If TypeName(resultVar) = "CValue" Then
+                'caller is returning a JS engine type
+                Set result = resultVar
+            Else
+                result.vType = vtCOMObject
+                Set result.objVal = resultVar
+            End If
         Else
             Set result = VariantToCValue(resultVar)
         End If

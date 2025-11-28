@@ -14,6 +14,9 @@ Attribute VB_Exposed = True
 'Author:  David Zimmer <dzzie@yahoo.com> + Claude.ai
 'Site:    http://sandsprite.com
 'License: MIT
+
+'this is to give vb6 access to json formatted data
+
 Option Explicit
 
 ' Singleton is fine
@@ -22,6 +25,11 @@ Private m_jsonInterp As CInterpreter
 Friend Property Get interp() As CInterpreter
     Set interp = m_jsonInterp
 End Property
+
+Public Function ParseToCVal(jsonText As String) As CValue
+    On Error Resume Next
+    Set ParseToCVal = ParseJSON(jsonText)
+End Function
 
 Public Function Parse(json As String) As Object
     If m_jsonInterp Is Nothing Then
