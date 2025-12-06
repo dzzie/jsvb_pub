@@ -1,3 +1,5 @@
+hex
+cvaluetovariant
 filesize
 IPCDebugMod
 hoist

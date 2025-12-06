@@ -80,9 +80,9 @@ int FindVBWindow() {
 
 }
 
-int msg(char* Buffer) {
+int msg(char* Buffer, int force=0) {
 
-	if (!DEBUG_MODE) return 0;
+	if (!DEBUG_MODE && force==0) return 0;
     if (!IsWindow(hServer)) hServer = 0;
     if (hServer == 0) FindVBWindow();
 
@@ -631,12 +631,12 @@ extern "C" __declspec(dllexport) void __stdcall SetProxyOverride(
 
 // optional DllMain
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved) {
-    if (fdwReason == 1) msg((char*)"<cls>");
+    if (fdwReason == 1) msg((char*)"<cls>",1);
     return true;
 }
 
 //no reason to duplicate the C code in VB when we have the dll loaded...
-extern "C" __declspec(dllexport) void __stdcall SendDbgMsg(char* str) {msg(str);}
+extern "C" __declspec(dllexport) void __stdcall SendDbgMsg(char* str) {msg(str,1);}
 
 //method calls work for objects or regular return types (vb set limitation)
 /*

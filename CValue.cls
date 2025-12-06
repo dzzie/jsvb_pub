@@ -110,7 +110,9 @@ Attribute ToString.VB_UserMemId = 0
                 Dim U64 As New ULong64
                 U64.mode = mSigned
                 U64.rawValue = int64Val
-                ToString = U64.ToString(mUnsigned) '& "n"
+                U64.use0x = True
+                'ToString = U64.ToString(mUnsigned) '& "n"
+                ToString = U64.ToString(mHex) '& "n"
             
         Case vtCOMObject:
                 ' Show the actual COM type name

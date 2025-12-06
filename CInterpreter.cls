@@ -2905,7 +2905,7 @@ Private Function CValueToVariant(val As CValue) As Variant
             
         Case vtInt64:
             ' Convert Currency to Double (may lose precision)
-            CValueToVariant = CDbl(val.int64Val)
+            CValueToVariant = val.ToString()
             
         Case vtCOMObject:
             Set CValueToVariant = val.objVal
