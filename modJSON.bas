@@ -254,7 +254,67 @@ Public Function ParseJSONString(text As String, ByRef pos As Long) As CValue
     Loop
     
     result.strVal = str
+    
+    ' SNEAKY AUTO-CONVERT: strict validation only - 0x hex strings or numbers as quoted strings we convert to int/bigint unsigned.
+    If Len(str) > 0 And InStr(str, " ") = 0 Then
+        ' Try hex (0x prefix)
+        If Len(str) > 2 And Left$(str, 2) = "0x" Then
+            Dim hexPart As String
+            hexPart = Mid$(str, 3)
+            
+            If IsStrictHex(hexPart) Then
+                If result.LoadNumFromStr(str) <> vtUndefined Then
+                    ' Converted
+                End If
+            End If
+        
+        ' Try decimal (strict - only digits, optional leading -)
+        ElseIf IsStrictNumeric(str) Then
+            If result.LoadNumFromStr(str) <> vtUndefined Then
+                ' Converted
+            End If
+        End If
+    End If
+    
     Set ParseJSONString = result
+End Function
+
+Private Function IsStrictHex(s As String) As Boolean
+    If Len(s) = 0 Then Exit Function
+    Dim i As Long, ch As String
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If Not ((ch >= "0" And ch <= "9") Or _
+                (ch >= "a" And ch <= "f") Or _
+                (ch >= "A" And ch <= "F")) Then
+            Exit Function
+        End If
+    Next
+    IsStrictHex = True
+End Function
+
+Private Function IsStrictNumeric(s As String) As Boolean
+    If Len(s) = 0 Then Exit Function
+    Dim i As Long
+    Dim ch As String
+    Dim start As Long
+    
+    start = 1
+    ' Allow leading minus
+    If Left$(s, 1) = "-" Then
+        If Len(s) = 1 Then Exit Function  ' Just "-" is invalid
+        start = 2
+    End If
+    
+    ' Rest must be digits only
+    For i = start To Len(s)
+        ch = Mid$(s, i, 1)
+        If Not (ch >= "0" And ch <= "9") Then
+            Exit Function
+        End If
+    Next
+    
+    IsStrictNumeric = True
 End Function
 
 Public Function ParseJSONNumber(text As String, ByRef pos As Long) As CValue
