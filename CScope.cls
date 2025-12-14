@@ -33,7 +33,7 @@ Private Sub Class_Initialize()
 End Sub
 
 ' Define a new variable in this scope
-Public Sub DefineVar(Name As String, value As CValue)
+Public Sub DefineVar(Name As String, Value As CValue)
     On Error Resume Next
     ' Remove if exists
     m_vars.Remove Name
@@ -41,7 +41,7 @@ Public Sub DefineVar(Name As String, value As CValue)
     On Error GoTo 0
     
     ' Add new value
-    m_vars.add value, Name
+    m_vars.add Value, Name
     m_varNames.add Name, Name  'track the name
 End Sub
 
@@ -71,7 +71,7 @@ Public Function GetVar(Name As String) As CValue
     On Error GoTo 0
 End Function
 
-Public Sub SetVar(Name As String, value As CValue)
+Public Sub SetVar(Name As String, Value As CValue)
     Dim existing As CValue
     Dim found As Boolean
     
@@ -84,14 +84,14 @@ Public Sub SetVar(Name As String, value As CValue)
     If found Then
         ' Found in this scope - update it
         m_vars.Remove Name
-        m_vars.add value, Name
+        m_vars.add Value, Name
     ElseIf Not m_parent Is Nothing Then
         ' Try parent scope
-        m_parent.SetVar Name, value
+        m_parent.SetVar Name, Value
     Else
         ' Not found anywhere - create in global scope (sloppy mode)
         ' This prevents infinite recursion
-        m_vars.add value, Name
+        m_vars.add Value, Name
         m_varNames.add Name, Name
     End If
 End Sub
@@ -110,40 +110,25 @@ Public Property Set Parent(p As CScope)
     Set m_parent = p
 End Property
 
-' NEW - Get all variable info
-Public Function GetAllVariables() As Collection
+Public Function GetAllVariables() As Collection 'of CVarItem
     Dim result As New Collection
     Dim i As Long
     Dim varName As String
     Dim varValue As CValue
-    Dim info As String
-    
+    Dim vi As CVarItem
+
     For i = 1 To m_varNames.count
         varName = m_varNames(i)
-        Set varValue = m_vars(varName)
-        
-        info = varName & " = " & varValue.ToString() & " (" & GetTypeName(varValue.vType) & ")"
-        result.add info
+        Set vi = New CVarItem
+        Set vi.Value = m_vars(varName)
+        vi.Name = varName
+        vi.isGlobal = (m_parent Is Nothing)
+        result.add vi
     Next
     
     Set GetAllVariables = result
 End Function
 
-Private Function GetTypeName(vt As ValueType) As String
-    Select Case vt
-        Case vtUndefined: GetTypeName = "undefined"
-        Case vtNull: GetTypeName = "null"
-        Case vtBoolean: GetTypeName = "boolean"
-        Case vtNumber: GetTypeName = "number"
-        Case vtString: GetTypeName = "string"
-        Case vtObject: GetTypeName = "object"
-        Case vtArray: GetTypeName = "array"
-        Case vtfunction: GetTypeName = "function"
-        Case vtInt64: GetTypeName = "bigint"
-        Case vtCOMObject: GetTypeName = "object"
-        Case Else: GetTypeName = "unknown"
-    End Select
-End Function
 
 
 Public Function CountAllCValues() As Long

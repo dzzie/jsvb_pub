@@ -57,6 +57,22 @@ Public objectKeys As Collection
 
 Const dbg_mode As Boolean = False
 
+Function GetTypeName() As String
+    Select Case vType
+        Case vtUndefined: GetTypeName = "undefined"
+        Case vtNull: GetTypeName = "null"
+        Case vtBoolean: GetTypeName = "boolean"
+        Case vtNumber: GetTypeName = "number"
+        Case vtString: GetTypeName = "string"
+        Case vtObject: GetTypeName = "object"
+        Case vtArray: GetTypeName = "array"
+        Case vtfunction: GetTypeName = "function"
+        Case vtInt64: GetTypeName = "bigint"
+        Case vtCOMObject: GetTypeName = "object"
+        Case Else: GetTypeName = "unknown"
+    End Select
+End Function
+
 ' Helper: Get array length
 Public Function ArrayLength() As Long
     If vType = vtArray And Not arrayVal Is Nothing Then
@@ -383,7 +399,7 @@ End Function
 
 ' Set a property on this object
 'case sensitive
-Public Sub SetProperty(propName As String, value As CValue)
+Public Sub SetProperty(propName As String, Value As CValue)
 
     If vType <> vtObject Then
         Err.Raise 5, "CValue.SetProperty", "Not an object"
@@ -413,18 +429,18 @@ Public Sub SetProperty(propName As String, value As CValue)
         ' Re-add at same position
         If foundIndex <= objectKeys.count Then
             objectKeys.add propName, , foundIndex
-            objectProps.add value, , foundIndex
+            objectProps.add Value, , foundIndex
         Else
             objectKeys.add propName
-            objectProps.add value
+            objectProps.add Value
         End If
         
-        If dbg_mode Then Debug.Print ">>> CValue.SetProperty('" & propName & "') = " & value.vType & " (updated)"
+        If dbg_mode Then Debug.Print ">>> CValue.SetProperty('" & propName & "') = " & Value.vType & " (updated)"
     Else
         ' NEW: Just add
         objectKeys.add propName
-        objectProps.add value, propName
-        If dbg_mode Then Debug.Print ">>> CValue.SetProperty('" & propName & "') = " & value.vType & " (new)"
+        objectProps.add Value, propName
+        If dbg_mode Then Debug.Print ">>> CValue.SetProperty('" & propName & "') = " & Value.vType & " (new)"
     End If
 End Sub
 
