@@ -1473,7 +1473,7 @@ Private Function EvaluateLiteral(Node As CNode) As CValue
     
     If debug_mode Then Debug.Print ">>> EvaluateLiteral: VarType = " & VarType(Node.Value) & ", Value = '" & Node.Value & "'"
  
-    If isNull(Node.Value) Then
+    If IsNull(Node.Value) Then
         result.vType = vtNull
     ElseIf VarType(Node.Value) = vbBoolean Then
         result.vType = vtBoolean
@@ -2159,37 +2159,54 @@ Private Function EvaluateCall(Node As CNode) As CValue
         If objVal.vType = vtCOMObject Then
             methodName = Node.Callee.prop.Name
             
-            ' NEW: Check if there's a JS helper function first!
-            Dim jsHelper As CValue
-            Set jsHelper = objVal.GetProperty(methodName)
+            'If methodName = "_Run" Then Stop
+            
+            ' Check if explicitly calling original COM method via "_prefix"
+            Dim callOriginal As Boolean, realMethodName As String, jsHelper As CValue
+            
+            callOriginal = False
+            realMethodName = methodName
+            
+            If Len(methodName) > 1 And Left$(methodName, 1) = "_" Then
+                realMethodName = Mid$(methodName, 2)
+                If objVal.HasProperty(realMethodName) Then
+                    'an override of the real com method exists..they are trying to call the real one..
+                    callOriginal = True
+                Else
+                    realMethodName = "_" & realMethodName 'ok add it back in it was for legit..
+                End If
+            End If
 
-            If Not jsHelper Is Nothing Then
-                If jsHelper.vType = vtfunction Then
-                    ' JS helper exists - call it instead of forwarding to COM!
-                    If dbg_mode Then Debug.Print ">>> Found JS helper '" & methodName & "' on COM object"
-                    
-                    ' Evaluate arguments (reusing same pattern as vtObject code below)
-                    For i = 1 To Node.Arguments.count
-                        Set arg = Node.Arguments(i)
-                        argValues.add EvaluateExpression(arg)
-                    Next
-                    
-                    ' Call JS helper with COM object as 'this' context
-                    Set func = jsHelper.objVal
-                    Dim funcValueCOM As New CValue  ' Use unique name to avoid conflicts
-                    funcValueCOM.vType = vtfunction
-                    Set funcValueCOM.objVal = func
-                    Set result = CallJSFunction(funcValueCOM, argValues, objVal)  ' objVal = 'this'
-                    
-                    depth = depth - 1
-                    Set EvaluateCall = result
-                    Exit Function
+            If Not callOriginal Then
+ 
+                Set jsHelper = objVal.GetProperty(methodName)
+
+                If Not jsHelper Is Nothing Then
+                    If jsHelper.vType = vtfunction Then
+                        ' JS helper exists - call it
+                        If dbg_mode Then Debug.Print ">>> Found JS helper '" & methodName & "' on COM object"
+                        
+                        For i = 1 To Node.Arguments.count
+                            Set arg = Node.Arguments(i)
+                            argValues.add EvaluateExpression(arg)
+                        Next
+                        
+                        Set func = jsHelper.objVal
+                        Dim funcValueCOM As New CValue
+                        funcValueCOM.vType = vtfunction
+                        Set funcValueCOM.objVal = func
+                        Set result = CallJSFunction(funcValueCOM, argValues, objVal)
+                        
+                        depth = depth - 1
+                        Set EvaluateCall = result
+                        Exit Function
+                    End If
                 End If
             End If
             
-            ' No JS helper - forward to actual COM method
-            If dbg_mode Then Debug.Print ">>> No JS helper, forwarding to COM method '" & methodName & "'"
-            Set result = CallCOMMethod(objVal.objVal, methodName, Node.Arguments)
+            ' Forward to COM
+            If dbg_mode Then Debug.Print ">>> Forwarding to COM method '" & realMethodName & "'"
+            Set result = CallCOMMethod(objVal.objVal, realMethodName, Node.Arguments)
             depth = depth - 1
             Set EvaluateCall = result
             Exit Function
@@ -2937,7 +2954,7 @@ Private Function VariantToCValue(v As Variant) As CValue
         Exit Function
     End If
     
-    If isNull(v) Then
+    If IsNull(v) Then
         result.vType = vtNull
         Set VariantToCValue = result
         Exit Function

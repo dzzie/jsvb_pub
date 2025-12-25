@@ -17,6 +17,16 @@ console.log(wsh.safeExpandEnv("PATH"));  // Returns expanded path or "(undefined
 
 form.taco('dude')
 
+wsh.Run = function(cmd) {
+    console.log("[LOG] " + cmd);
+    return this._Run(cmd, 1, true);  // Calls original COM Run
+};
+
+wsh.Run("C:\\Windows\\SysWOW64\\notepad.exe")
+
+
+
+
 
 
 
