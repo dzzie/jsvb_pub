@@ -49,6 +49,7 @@ A full-featured JavaScript interpreter with integrated visual debugger, built en
 - **Objects**: Object literals, property access, methods, dynamic properties
 - **Arrays**: Array literals, indexing, length, iteration
 - **Type System**: `number`, `string`, `boolean`, `object`, `function`, `undefined`, `null`, `bigint`, `comobject`
+- **enhanced print()**: can dump arrays and object (including JSON) instead of just scalar values
 
 ### Built-in Objects
 - **console**: `console.log()`, `console.error()`, `console.warn()`
@@ -57,7 +58,20 @@ A full-featured JavaScript interpreter with integrated visual debugger, built en
 - **Array Methods**: `map()`, `filter()`, `reduce()`, `forEach()`, `push()`, `pop()`, `shift()`, `unshift()`, `slice()`, `splice()`, `indexOf()`, `join()`
 - **global functions** `parseInt`, `parseFloat`, `isNaN`, `isFinite`, `isInteger`,`encodeURIComponent`, `decodeURIComponent`, `encodeURI`, `decodeURI`, _
                        `escape`, `unescape`, `eval`, `print`, `alert`, `prompt`, `format`,`printf`, `hex`, `Number`, `String'
-                       
+ 
+### COM Object Support
+- Seamless COM automation integration
+- Supports `ActiveXObject()` with optional `UseSafeSubset` safety mode
+- Script host can expose its own `IDispatch` COM objects (similar to MS Script Control)
+- Custom `CallByNameEx` (native C) supporting argument arrays and object returns without requiring a second `Set` call
+- COM objects can be extended and overridden at runtime using JavaScript, without proxies, subclassing, or loss of identity
+- COM methods may return native JavaScript values directly, allowing VB6 code to act as a zero-overhead JS object factory
+- Audit event system allows the host to inspect or veto calls before COM methods are invoked
+
+### JS Objects as VB Objects (beta)
+- Abilty to access js objects through VB6's generic Object type and IDispatch proxying
+- See ./dynproxy/readme.md for more details
+
 ### Exception Handling
 ```javascript
 try {
@@ -141,6 +155,190 @@ var rs = new ActiveXObject('ADODB.Recordset');
 ' VB6 - Enable unsafe mode
 interp.UseSafeSubset = False  ' Allow ActiveXObject
 ```
+
+### COM Object Augmentation
+
+You can attach JavaScript properties and methods directly to COM objects, effectively extending them without modifying the underlying binary object.
+
+#### Attaching Helpers from VB6 Host
+```vb
+' Expose a COM object
+interp.AddCOMObject "form", Me
+
+' Attach a JS helper function to it
+interp.AttachCOMHelper "form", "taco", "function(cmd){print('its tuesday ' + cmd + '!');}"
+```
+
+#### Attaching Helpers from JavaScript
+```javascript
+var wsh = new ActiveXObject("WScript.Shell");
+
+// Add a helper method that wraps the real COM method
+wsh.safeExpandEnv = function(varName) {
+    var result = this.ExpandEnvironmentStrings("%" + varName + "%");
+    if (result === "%" + varName + "%") {
+        return "(undefined)";
+    }
+    return result;
+};
+
+console.log(wsh.safeExpandEnv("PATH"));
+```
+
+#### Overriding COM Methods
+
+JS methods are checked first, so you can override COM methods transparently:
+
+```javascript
+var wsh = new ActiveXObject("WScript.Shell");
+
+// Override Run to add logging
+wsh.Run = function(cmd) {
+    console.log("[LOG] Run called: " + cmd);
+    return this._Run(cmd, 1, true);  // Call original via underscore prefix
+};
+
+wsh.Run("notepad.exe");  // Logs then executes
+```
+
+#### The Underscore Convention
+
+When a JS override exists, prefix the method name with `_` to call the original COM method:
+
+| Call | Behavior |
+|------|----------|
+| `obj.Run(...)` | Calls JS override if exists, else COM |
+| `obj._Run(...)` | Always calls original COM method |
+
+This allows overrides to wrap and delegate to the original implementation without recursion.
+
+### 🔁 Extended COM Invocation (`CallByNameEx`)
+
+The engine now uses an enhanced COM dispatch layer (`CallByNameEx`) that correctly supports **methods, property gets, and property puts** using a unified late-bound invocation path. This implementation transparently handles argument passing via either `SAFEARRAY*` or `VARIANT`-wrapped arrays, performs proper argument reversal, and correctly marks named arguments for `DISPATCH_PROPERTYPUT` and `DISPATCH_PROPERTYPUTREF` calls. It also addresses a classic VB/VBA friction point: the legacy `CallByName` pattern can’t reliably handle **object returns** without a second attempt using the `Set` keyword, while `CallByNameEx` returns object values cleanly in one pass and explicitly reports whether the result is an object. The result is more reliable COM interaction across methods, properties, and indexed access patterns, with consistent return typing and fewer COM edge-case failures. 
+
+---
+
+### 🔄 Native JavaScript Type Returns from COM Calls
+
+In addition to automatic translation of `VARIANT` arrays into JavaScript arrays, COM methods can now **return native JavaScript engine types directly**. If a COM method returns an engine object (such as a `CValue`), the runtime detects this and passes it straight through without wrapping it as a generic COM object. This allows COM components to construct and return rich JavaScript values—objects, arrays, or parsed JSON structures—directly into the interpreter with minimal marshaling overhead.
+
+```vb
+' COM side (VB/VBA) can return a CValue (native JS object) directly:
+Function getFunc(IndexVaOrName) 'as CValue of a Json object (or string if we fail!)
+    Dim ret As CValue, s As String
+    '{'index':483, 'name':'small_sub_421881', 'start':'0x421881', 'end':'0x4218cf', 'size':'78', 'xrefs':'2', 'refqty':'0',  'argsize':'0', 'tailqty':'0', 'labelqty':'0', 'frsize':'0'}
+    
+    s = ipc.SendCmdRecvText("getfunc:" & IndexVaOrName & ":" & ipc.listenHwnd)
+    s = Replace(s, "'", """") 'oopsie
+    Set ret = json.ParseToCVal(s)
+    If IsObject(ret) Then
+        Set getFunc = ret
+    Else
+        getFunc = s
+    End If
+End Function
+```
+
+And on the engine side, `CallCOMMethod` recognizes that “object return” might actually be a **native JS value container** and routes it accordingly:
+
+```vb
+If hr = 0 Then  ' S_OK
+    If isObj Then
+        If TypeName(resultVar) = "CValue" Then
+            'caller is returning a JS engine type
+            Set result = resultVar
+        Else
+            result.vType = vtCOMObject
+            Set result.objVal = resultVar
+        End If
+    Else
+        Set result = VariantToCValue(resultVar)
+    End If
+Else
+    ' Call failed - return undefined
+    result.vType = vtUndefined
+End If
+```
+
+This makes COM a first-class producer of JavaScript values: you can return structured objects directly (not just strings or `IDispatch`), while still keeping the existing behavior for normal COM objects and scalar variants. 
+
+---
+
+## 🔄 JavaScript Objects as COM Objects (DynProxy)
+
+`js4vb` supports **bidirectional COM interop**.
+In addition to calling COM objects from JavaScript, **JavaScript objects can be exposed as live `IDispatch` COM objects**, allowing native VB6 or other COM clients to call directly into JavaScript using late binding.
+
+This is implemented using a dynamic COM proxy (`DynProxy`) that intercepts all `IDispatch::GetIDsOfNames` and `IDispatch::Invoke` calls and routes them into the JavaScript runtime at call time.
+
+### What This Enables
+
+* **JS → COM**: Call COM methods and properties from JavaScript
+* **COM → JS**: Call JavaScript objects *as if they were native COM objects*
+* **No wrappers or code generation** — calls are resolved dynamically
+* **Identity-preserving proxies** — no broken chaining or object duplication
+* **Full late binding** — works with `Object` variables and `CallByName`
+
+VB6 (or any COM client) sees a normal `IDispatch` object, while the engine resolves method names, properties, and arguments dynamically inside JavaScript.
+
+---
+
+### Example: Calling JavaScript from VB6
+
+```vb
+    ' Create a JavaScript object
+    interp.Execute "var person = { name: 'John', age: 30, city: 'NYC' };"
+
+    ' Get it as a VB COM object!
+    Dim person As Object
+    Set person = interp.EvalAsObject("person")
+
+    ' USE IT LIKE A VB OBJECT!
+    Debug.Print "Name: " & person.name       ' "John"  (trying bad case)
+    Debug.Print "Age: " & person.age         ' 30
+    Debug.Print "City: " & person.city       ' "NYC"
+
+    ' MODIFY IT!
+    person.age = 31
+    person.Job = "Developer"                 ' Add new property!
+
+```
+
+No type libraries.
+No IDL.
+No proxy classes.
+
+---
+
+### How It Works (High Level)
+
+* A dynamic COM proxy implements `IDispatch`
+* All name resolution and invocation is intercepted
+* Method/property calls are forwarded into the JavaScript engine
+* Return values flow back as COM variants or native JS values
+
+This mechanism is also used internally to support:
+
+* COM augmentation
+* Method overrides
+* Dynamic object trees
+* Scriptable adapters and facades
+
+---
+
+### Why This Matters
+
+Classic COM scripting hosts are **one-way**: scripts can call COM, but COM can’t call back without rigid interfaces.
+
+`js4vb` removes that limitation.
+
+It turns JavaScript into:
+
+* a **dynamic COM server**
+* a **mockable API surface**
+* a **runtime-extensible automation layer**
+
+All while remaining 100% late-bound and compatible with VB6.
 
 ---
 
@@ -543,6 +741,9 @@ console.log("Fibonacci(6) = " + result);
 - `new ActiveXObject()` for COM automation
 - Visual debugger with breakpoints and stepping
 - Call stack and variable inspection
+- this binding 
+- function hoisting
+- argument object inside functions 
 
 ### ❌ Not Implemented
 - `let` and `const` (use `var`)
@@ -553,16 +754,13 @@ console.log("Fibonacci(6) = " + result);
 - Classes (use constructor functions)
 - `async/await`, Promises
 - Regular expressions
-- `new` operator for constructors (except `ActiveXObject`, `Error`)
+- `new` operator for constructors (except `ActiveXObject`, `Error`, `function`)
 - Prototypal inheritance
 - Getters/setters
 
 ### ⚠️ Known Quirks
 - No automatic semicolon insertion (always use semicolons)
 - Strict mode not supported
-- `this` binding is simplified
-- No variable hoisting (declare before use)
-- No `arguments` object in functions
 
 ---
 

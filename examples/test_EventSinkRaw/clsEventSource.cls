@@ -13,6 +13,9 @@ Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 Option Explicit
 
+Public WithEvents t As CommandButton
+Attribute t.VB_VarHelpID = -1
+
 Event TestEvent(ByVal Message As String, ByVal Number As Long)
 Event AnotherEvent(ByVal Value As Double)
 
@@ -22,4 +25,8 @@ End Sub
 
 Public Sub FireAnotherEvent(val As Double)
     RaiseEvent AnotherEvent(val)
+End Sub
+
+Private Sub t_Click()
+    MsgBox "class t click!"
 End Sub
