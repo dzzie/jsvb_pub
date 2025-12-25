@@ -132,7 +132,7 @@ Private Sub cmdPaste_Click()
     txtScript = unixToDOS(Clipboard.GetText)
 End Sub
 
-Private Sub intrep_AuditEvent(category As jsvb.enumAuditEvents, description As String, ByRef cancel As Boolean)
+Private Sub intrep_AuditEvent(category As js4vb.enumAuditEvents, description As String, ByRef cancel As Boolean)
     
     Debug.Print "AuditEvent: " & intrep.AuditEventToStr(category) & " : " & description
     
@@ -162,6 +162,8 @@ Private Sub cmdExec_Click()
     intrep.AuditMode = True
     intrep.UseSafeSubset = (chkSafeSubset.Value = 1)
     intrep.AddCOMObject "form", Me
+    intrep.AttachCOMHelper "form", "taco", "function(cmd){print('its tuesday ' + cmd + '!');}"
+    
     intrep.Execute txtScript.Text
     
     If Err.Number <> 0 Then MsgBox Err.description

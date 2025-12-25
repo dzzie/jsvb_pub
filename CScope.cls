@@ -45,6 +45,12 @@ Public Sub DefineVar(Name As String, Value As CValue)
     m_varNames.add Name, Name  'track the name
 End Sub
 
+Public Sub DeleteVar(varName As String)
+    On Error Resume Next
+    m_vars.Remove varName
+    On Error GoTo 0
+End Sub
+
 Public Function GetVar(Name As String) As CValue
     On Error Resume Next
     Dim val As CValue

@@ -14,16 +14,3 @@ alert(wsh.safeExpandEnv)
 
 // Now you can call it!
 console.log(wsh.safeExpandEnv("PATH"));  // Returns expanded path or "(undefined)"
-
-form.taco('dude')
-
-
-
-
-
-
-
-
-
-
-

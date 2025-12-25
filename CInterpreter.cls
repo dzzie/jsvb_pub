@@ -738,6 +738,62 @@ Public Sub AddCOMObject(Name As String, obj As Object)
     m_comObjects.add obj, Name
 End Sub
 
+' Attach a JS helper function to a COM object
+' comObjName: Name of the COM object in global scope (e.g., "WScript")
+' methodName: Name of the helper method to attach (e.g., "safeRun")
+' jsFunction: JS function source code (e.g., "function(x) { return this.Run(x); }")
+Public Sub AttachCOMHelper(comObjName As String, methodName As String, jsFunction As String)
+    On Error GoTo errHandler
+    
+    Static counter As Long  ' Persistent across calls
+    counter = counter + 1
+    
+    ' Get the COM object wrapper from global scope
+    Dim comWrapper As CValue
+    Set comWrapper = m_globalScope.GetVar(comObjName)
+    
+    If comWrapper Is Nothing Then
+        Err.Raise vbObjectError + 1, "AttachCOMHelper", _
+            "Variable not found: " & comObjName
+    End If
+    
+    If comWrapper.vType <> vtCOMObject Then
+        Err.Raise vbObjectError + 2, "AttachCOMHelper", _
+            "Not a COM object: " & comObjName & " (type=" & comWrapper.vType & ")"
+    End If
+    
+    ' Parse and execute the function definition
+    Dim tempVarName As String
+    tempVarName = "__helper_" & methodName & "_" & counter
+    
+    Dim code As String
+    code = "var " & tempVarName & " = " & jsFunction & ";"
+    
+    Execute code
+    
+    ' Get the created function
+    Dim helperFunc As CValue
+    Set helperFunc = m_globalScope.GetVar(tempVarName)
+    
+    If helperFunc Is Nothing Or helperFunc.vType <> vtfunction Then
+        Err.Raise vbObjectError + 3, "AttachCOMHelper", _
+            "Failed to create function from: " & jsFunction
+    End If
+    
+    ' Attach it to the COM object wrapper
+    comWrapper.SetProperty methodName, helperFunc
+    
+    ' Clean up temp variable
+    m_globalScope.DeleteVar tempVarName
+    
+    Exit Sub
+    
+errHandler:
+    ' Re-raise with context
+    Err.Raise Err.Number, "AttachCOMHelper", _
+        "Failed to attach " & methodName & " to " & comObjName & ": " & Err.description
+End Sub
+
 ' Public API: Remove a COM object
 Public Sub RemoveCOMObject(Name As String)
     ' Remove from global scope
@@ -1417,7 +1473,7 @@ Private Function EvaluateLiteral(Node As CNode) As CValue
     
     If debug_mode Then Debug.Print ">>> EvaluateLiteral: VarType = " & VarType(Node.Value) & ", Value = '" & Node.Value & "'"
  
-    If IsNull(Node.Value) Then
+    If isNull(Node.Value) Then
         result.vType = vtNull
     ElseIf VarType(Node.Value) = vbBoolean Then
         result.vType = vtBoolean
@@ -2090,11 +2146,51 @@ Private Function EvaluateCall(Node As CNode) As CValue
         
         ' === Check if it's a COM method call ===
         ' (objVal already evaluated above - reuse it!)
+'        If objVal.vType = vtCOMObject Then
+'            methodName = Node.Callee.prop.Name
+'
+'            Set result = CallCOMMethod(objVal.objVal, methodName, Node.Arguments)
+'            depth = depth - 1  ' ? ADD THIS
+'            Set EvaluateCall = result
+'            Exit Function
+'        End If
+
+        ' === Check if it's a COM method call ===
         If objVal.vType = vtCOMObject Then
             methodName = Node.Callee.prop.Name
             
+            ' NEW: Check if there's a JS helper function first!
+            Dim jsHelper As CValue
+            Set jsHelper = objVal.GetProperty(methodName)
+
+            If Not jsHelper Is Nothing Then
+                If jsHelper.vType = vtfunction Then
+                    ' JS helper exists - call it instead of forwarding to COM!
+                    If dbg_mode Then Debug.Print ">>> Found JS helper '" & methodName & "' on COM object"
+                    
+                    ' Evaluate arguments (reusing same pattern as vtObject code below)
+                    For i = 1 To Node.Arguments.count
+                        Set arg = Node.Arguments(i)
+                        argValues.add EvaluateExpression(arg)
+                    Next
+                    
+                    ' Call JS helper with COM object as 'this' context
+                    Set func = jsHelper.objVal
+                    Dim funcValueCOM As New CValue  ' Use unique name to avoid conflicts
+                    funcValueCOM.vType = vtfunction
+                    Set funcValueCOM.objVal = func
+                    Set result = CallJSFunction(funcValueCOM, argValues, objVal)  ' objVal = 'this'
+                    
+                    depth = depth - 1
+                    Set EvaluateCall = result
+                    Exit Function
+                End If
+            End If
+            
+            ' No JS helper - forward to actual COM method
+            If dbg_mode Then Debug.Print ">>> No JS helper, forwarding to COM method '" & methodName & "'"
             Set result = CallCOMMethod(objVal.objVal, methodName, Node.Arguments)
-            depth = depth - 1  ' ? ADD THIS
+            depth = depth - 1
             Set EvaluateCall = result
             Exit Function
         End If
@@ -2211,7 +2307,23 @@ Private Function EvaluateMember(Node As CNode) As CValue
     End If
     
     ' === NEW: Handle COM objects ===
+'    If obj.vType = vtCOMObject Then
+'        Set EvaluateMember = GetCOMProperty(obj.objVal, propName)
+'        Exit Function
+'    End If
+
+    ' === NEW: Handle COM objects ===
     If obj.vType = vtCOMObject Then
+        ' Check if there's a JS property/helper first!
+        Dim jsProp As CValue
+        Set jsProp = obj.GetProperty(propName)
+        
+        If Not jsProp Is Nothing Then ' Found JS property - return it!
+            Set EvaluateMember = jsProp
+            Exit Function
+        End If
+        
+        ' No JS property - forward to actual COM property
         Set EvaluateMember = GetCOMProperty(obj.objVal, propName)
         Exit Function
     End If
@@ -2605,11 +2717,22 @@ Private Sub AssignMember(memberNode As CNode, Value As CValue)
     End If
     
     ' === NEW: Handle COM objects ===
+'    If obj.vType = vtCOMObject Then
+'        SetCOMProperty obj.objVal, propName, Value
+'        Exit Sub
+'    End If
     If obj.vType = vtCOMObject Then
-        SetCOMProperty obj.objVal, propName, Value
+        ' Special case: If assigning a JS function, attach it to the COM object wrapper!
+        If Value.vType = vtfunction Then
+            ' Attach JS helper to the CValue wrapper (not the actual COM object)
+            obj.SetProperty propName, Value
+        Else
+            ' Normal COM property assignment - forward to actual COM object
+            SetCOMProperty obj.objVal, propName, Value
+        End If
         Exit Sub
     End If
-    
+
     ' Object property assignment
     If obj.vType = vtObject Then
         On Error Resume Next
@@ -2814,7 +2937,7 @@ Private Function VariantToCValue(v As Variant) As CValue
         Exit Function
     End If
     
-    If IsNull(v) Then
+    If isNull(v) Then
         result.vType = vtNull
         Set VariantToCValue = result
         Exit Function

@@ -401,7 +401,8 @@ End Function
 'case sensitive
 Public Sub SetProperty(propName As String, Value As CValue)
 
-    If vType <> vtObject Then
+    ' Allow both vtObject AND vtCOMObject to have properties!
+    If vType <> vtObject And vType <> vtCOMObject Then
         Err.Raise 5, "CValue.SetProperty", "Not an object"
     End If
     
@@ -446,7 +447,8 @@ End Sub
 
 ' Check if property exists
 Public Function HasProperty(propName As String) As Boolean
-    If vType <> vtObject Or objectKeys Is Nothing Then
+
+    If (vType <> vtObject And vType <> vtCOMObject) Or objectKeys Is Nothing Then
         HasProperty = False
         Exit Function
     End If
@@ -470,7 +472,7 @@ End Function
 
 ' Get property count
 Public Function PropertyCount() As Long
-    If vType = vtObject And Not objectKeys Is Nothing Then
+    If (vType <> vtObject And vType <> vtCOMObject) And Not objectKeys Is Nothing Then
         PropertyCount = objectKeys.count
     Else
         PropertyCount = 0
@@ -479,7 +481,7 @@ End Function
 
 ' Iterate properties (for debugging)
 Public Function DumpProperties() As String
-    If vType <> vtObject Or objectKeys Is Nothing Then
+    If (vType <> vtObject And vType <> vtCOMObject) Or objectKeys Is Nothing Then
         DumpProperties = "{}"
         Exit Function
     End If
