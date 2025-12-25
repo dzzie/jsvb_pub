@@ -73,6 +73,8 @@ Dim hSink As Long
 Dim oCallback As clsEventCallback
 Dim hr As Long
 
+Dim test As New clsEventSource
+
 Function d(x)
     Debug.Print x
     List1.AddItem x
@@ -102,12 +104,16 @@ Private Sub Form_Load()
     SendDbgMsg "Starting: " & Now
     
     'TestSink 'works
-    lvTest   'works
+    'lvTest   'works
     
-    'this does not work..vb intrinsic controls are not full COM objects? probably magic wrappers around windows messages?
+    'this does not work..vb intrinsic controls are not full COM objects
+    'they do not support enumconnection points, we extracted their event class IIDs and tested
+    'but it looks like they expect early bound vtable based call backs and not IDispatch based lies
+    'like we tell the others.
     'hr = SinkEventsAuto(ObjPtr(Command1), StrPtr("cmd1"), ObjPtr(oCallback), hSink)
     'Form1.List1.AddItem "Command1 Result: 0x" & Hex$(hr) & " handle=" & hSink
 
+    Set test.t = Command1
 
 End Sub
 

@@ -40,3 +40,7 @@ new_*
 Browse.VC.db
 /dynproxy/Release/*
 /dynproxy/.vs/*
+*.tlog
+*.recipe
+*.zip
+*.ilk

@@ -12,9 +12,61 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 
+// ========================== Debug Output ==========================
 extern int msg(const char* Buffer, int force = 0);
 extern void msgf(const char* format, ...);
 
+// Forward declaration - ComTypeName from typename.cpp
+extern "C" VARIANT __stdcall ComTypeName(IUnknown* pUnk);
+
+/*
+ * NOTE: VB6 Intrinsic Control Events (CommandButton, TextBox, etc.)
+ *
+ * VB6 intrinsic controls use vtable-based event interfaces (derives from IUnknown),
+ * NOT IDispatch-based. When they fire events, they call directly into vtable slots:
+ *     pSink->vtable[3]()  // Click
+ *     pSink->vtable[4]()  // MouseDown, etc.
+ *
+ * Our universal sink fakes IDispatch interfaces, which works for COM/ActiveX controls.
+ * But intrinsic controls expect a real vtable layout - calling our fake sink crashes.
+ *
+ * To support intrinsics would require dynamically generating vtables with thunks
+ * that capture the slot index and forward to a common handler. Doable but gnarly.
+ *
+ * For now, intrinsic controls require native VB6 WithEvents. Everything else works:
+ *   - ActiveX controls (ListView, TreeView, etc. via .object)
+ *   - COM automation servers (Excel, Word, etc.)
+ *   - VB6 classes with Event declarations
+ 
+	 Address    Stack      Procedure                             Called from                   Frame
+	0019F2D8   660123D3   ? MSVBVM60.CallProcWithArgs           MSVBVM60.660123CE             0019F2C4
+	0019F2F0   66011B2C   ? MSVBVM60.InvokeVtblEvent            MSVBVM60.66011B27
+	0019F324   66005F17   ? MSVBVM60.InvokeEvent                MSVBVM60.66005F12
+	0019F3F8   66005D89   MSVBVM60.EvtErrFireWorker             MSVBVM60.66005D84             0019F3F4
+	0019F41C   66055FAE   MSVBVM60.EvtErrFire                   MSVBVM60.66055FA9             0019F418
+	0019F434   6602E991   MSVBVM60._DoClick                     MSVBVM60.6602E98C             0019F448
+	0019F44C   66004738   Includes MSVBVM60.6602E991            MSVBVM60.66004735             0019F448
+	0019F474   6600400E   MSVBVM60.CommonGizWndProc             MSVBVM60.66004009             0019F470
+	0019F4D0   660570AE   MSVBVM60.StdCtlWndProc                MSVBVM60.660570A9             0019F4CC
+	0019F4F4   66003ABF   MSVBVM60._DefWmCommand                MSVBVM60.66003ABA             0019F4F0
+	0019F560   66004F29   MSVBVM60.VBDefControlProc             MSVBVM60.66004F24             0019F55C
+	0019F6E0   66004738   Includes MSVBVM60.66004F29            MSVBVM60.66004735             0019F6DC
+	0019F708   6600400E   MSVBVM60.CommonGizWndProc             MSVBVM60.66004009             0019F704
+
+ */
+
+// ========================== VB6 Intrinsic Control Event IIDs ==========================
+// These controls don't expose IProvideClassInfo or EnumConnectionPoints properly,
+// but DO support connection points if you know the IID. Extracted from VB6.OLB.
+
+static const struct { const wchar_t* typeName; GUID eventIID; } g_VB6Intrinsics[] = {
+	{ L"TextBox",       { 0x33AD4EE2, 0x6699, 0x11CF, { 0xB7, 0x0C, 0x00, 0xAA, 0x00, 0x60, 0xD3, 0x93 } } },
+	{ L"ListBox",       { 0x33AD4F12, 0x6699, 0x11CF, { 0xB7, 0x0C, 0x00, 0xAA, 0x00, 0x60, 0xD3, 0x93 } } },
+	{ L"Timer",         { 0x33AD4F2A, 0x6699, 0x11CF, { 0xB7, 0x0C, 0x00, 0xAA, 0x00, 0x60, 0xD3, 0x93 } } },
+	{ L"Form",          { 0x33AD4F3A, 0x6699, 0x11CF, { 0xB7, 0x0C, 0x00, 0xAA, 0x00, 0x60, 0xD3, 0x93 } } },
+	{ L"CommandButton", { 0x33AD4EF2, 0x6699, 0x11CF, { 0xB7, 0x0C, 0x00, 0xAA, 0x00, 0x60, 0xD3, 0x93 } } },
+	{ nullptr, { 0 } }  // Sentinel
+};
 
 // ========================== Callback Interface ==========================
 // Your JS engine would implement this to receive events.
@@ -38,6 +90,7 @@ class UniversalEventSink : public IDispatch {
 	// Source identification
 	BSTR m_bstrSourceName = nullptr;  // User-provided name, e.g., "myExcelApp", "wdDoc1"
 	IUnknown* m_pSourceObject = nullptr;  // Optional: ref to source for passing through
+	DISPID m_dispidOnEvent = DISPID_UNKNOWN;  // Cached dispid for "OnEvent" method
 
 public:
 	UniversalEventSink(const IID& eventIID, ITypeInfo* pEventTI, PFN_EVENT_CALLBACK pfn, void* userData,
@@ -163,8 +216,6 @@ public:
 	}
 
 private:
-	DISPID m_dispidOnEvent = DISPID_UNKNOWN;  // Cached dispid for "OnEvent"
-
 	void ForwardToDispatch(BSTR eventName, DISPID dispid, DISPPARAMS* pSrcParams) {
 		msg("ForwardToDispatch: enter");
 		if (!m_pDispatchCallback) {
@@ -265,6 +316,7 @@ private:
 	}
 };
 
+
 static void DumpIID(const char* label, const IID& iid) {
 	LPOLESTR sz = nullptr;
 	StringFromIID(iid, &sz);
@@ -272,6 +324,34 @@ static void DumpIID(const char* label, const IID& iid) {
 		msgf("%s: %S", label, sz);
 		CoTaskMemFree(sz);
 	}
+}
+
+// Lookup event IID for VB6 intrinsic controls by type name
+static HRESULT GetVB6IntrinsicEventIID(IUnknown* pUnk, IID* pOutIID) {
+	msg("GetVB6IntrinsicEventIID: enter");
+
+	// Get the type name using our ComTypeName helper
+	VARIANT vName = ComTypeName(pUnk);
+	if (vName.vt != VT_BSTR || !vName.bstrVal) {
+		msg("GetVB6IntrinsicEventIID: couldn't get type name");
+		VariantClear(&vName);
+		return E_FAIL;
+	}
+
+	msgf("GetVB6IntrinsicEventIID: typeName=%S", vName.bstrVal);
+
+	for (int i = 0; g_VB6Intrinsics[i].typeName != nullptr; i++) {
+		if (_wcsicmp(vName.bstrVal, g_VB6Intrinsics[i].typeName) == 0) {
+			*pOutIID = g_VB6Intrinsics[i].eventIID;
+			DumpIID("GetVB6IntrinsicEventIID: found", *pOutIID);
+			VariantClear(&vName);
+			return S_OK;
+		}
+	}
+
+	msgf("GetVB6IntrinsicEventIID: '%S' not in intrinsic table", vName.bstrVal);
+	VariantClear(&vName);
+	return E_FAIL;
 }
 
 // ========================== Helper: Enumerate Connection Points ==========================
@@ -347,18 +427,49 @@ static HRESULT GetEventIIDFromTypeLib(IUnknown* pUnk, IID* pOutIID, ITypeInfo** 
 		return hr;
 	}
 
-	// Get containing typelib
-	ITypeLib* pTL = nullptr;
-	UINT idx = 0;
-	hr = pTI->GetContainingTypeLib(&pTL, &idx);
-	msgf("GetEventIIDFromTypeLib: GetContainingTypeLib = 0x%08X idx=%u", hr, idx);
-	if (FAILED(hr) || !pTL) {
+	// Get the interface GUID - we'll use this to search
+	TYPEATTR* pTIAttr = nullptr;
+	hr = pTI->GetTypeAttr(&pTIAttr);
+	if (FAILED(hr) || !pTIAttr) {
 		pTI->Release();
 		pDisp->Release();
 		return hr;
 	}
+	GUID dispIID = pTIAttr->guid;
+	DumpIID("GetEventIIDFromTypeLib: dispatch IID", dispIID);
+	pTI->ReleaseTypeAttr(pTIAttr);
 
-	// Get the coclass type info (search for it)
+	// Try to get containing typelib
+	ITypeLib* pTL = nullptr;
+	UINT idx = 0;
+	hr = pTI->GetContainingTypeLib(&pTL, &idx);
+	msgf("GetEventIIDFromTypeLib: GetContainingTypeLib = 0x%08X idx=%u", hr, idx);
+
+	if (FAILED(hr) || !pTL) {
+		// Fallback: Try loading MSVBVM60.DLL typelib for VB6 intrinsic controls
+		msg("GetEventIIDFromTypeLib: trying MSVBVM60.DLL...");
+		hr = LoadTypeLib(L"MSVBVM60.DLL", &pTL);
+		msgf("GetEventIIDFromTypeLib: LoadTypeLib MSVBVM60 = 0x%08X", hr);
+
+		if (FAILED(hr) || !pTL) {
+			// Try full path
+			wchar_t sysPath[MAX_PATH];
+			GetSystemDirectoryW(sysPath, MAX_PATH);
+			wcscat_s(sysPath, L"\\MSVBVM60.DLL");
+			hr = LoadTypeLib(sysPath, &pTL);
+			msgf("GetEventIIDFromTypeLib: LoadTypeLib full path = 0x%08X", hr);
+		}
+
+		if (FAILED(hr) || !pTL) {
+			pTI->Release();
+			pDisp->Release();
+			return hr;
+		}
+	}
+
+	pTI->Release();  // Done with the dispatch typeinfo
+
+	// Now search the typelib for a coclass that implements our dispatch interface
 	UINT count = pTL->GetTypeInfoCount();
 	msgf("GetEventIIDFromTypeLib: typelib has %u types", count);
 
@@ -376,40 +487,65 @@ static HRESULT GetEventIIDFromTypeLib(IUnknown* pUnk, IID* pOutIID, ITypeInfo** 
 			continue;
 		}
 
-		msgf("GetEventIIDFromTypeLib: checking coclass[%u] with %u impl types", i, pTA->cImplTypes);
+		// Check if this coclass implements our dispatch interface
+		bool foundDispatch = false;
+		UINT sourceIdx = (UINT)-1;
 
-		// Look for [default, source] interface
 		for (UINT j = 0; j < pTA->cImplTypes; j++) {
-			INT implFlags = 0;
-			if (FAILED(pCoClassTI->GetImplTypeFlags(j, &implFlags))) continue;
+			HREFTYPE hRef = 0;
+			if (FAILED(pCoClassTI->GetRefTypeOfImplType(j, &hRef))) continue;
 
-			if ((implFlags & IMPLTYPEFLAG_FDEFAULT) && (implFlags & IMPLTYPEFLAG_FSOURCE)) {
-				msg("GetEventIIDFromTypeLib: found [default, source]!");
-				HREFTYPE hRef = 0;
-				if (SUCCEEDED(pCoClassTI->GetRefTypeOfImplType(j, &hRef))) {
-					ITypeInfo* pEventTI = nullptr;
-					if (SUCCEEDED(pCoClassTI->GetRefTypeInfo(hRef, &pEventTI)) && pEventTI) {
-						TYPEATTR* pEventTA = nullptr;
-						if (SUCCEEDED(pEventTI->GetTypeAttr(&pEventTA)) && pEventTA) {
-							*pOutIID = pEventTA->guid;
-							DumpIID("GetEventIIDFromTypeLib: event IID", *pOutIID);
-							pEventTI->ReleaseTypeAttr(pEventTA);
-							if (ppOutEventTI) {
-								*ppOutEventTI = pEventTI;
-							}
-							else {
-								pEventTI->Release();
-							}
-							pCoClassTI->ReleaseTypeAttr(pTA);
-							pCoClassTI->Release();
-							pTL->Release();
-							pTI->Release();
-							pDisp->Release();
-							msg("GetEventIIDFromTypeLib: success");
-							return S_OK;
+			ITypeInfo* pImplTI = nullptr;
+			if (FAILED(pCoClassTI->GetRefTypeInfo(hRef, &pImplTI)) || !pImplTI) continue;
+
+			TYPEATTR* pImplTA = nullptr;
+			if (SUCCEEDED(pImplTI->GetTypeAttr(&pImplTA)) && pImplTA) {
+				// Check if this is our dispatch interface
+				if (IsEqualGUID(pImplTA->guid, dispIID)) {
+					foundDispatch = true;
+					msgf("GetEventIIDFromTypeLib: found coclass[%u] implements our dispatch", i);
+				}
+				pImplTI->ReleaseTypeAttr(pImplTA);
+			}
+
+			// Also check impl flags for [default, source]
+			INT implFlags = 0;
+			if (SUCCEEDED(pCoClassTI->GetImplTypeFlags(j, &implFlags))) {
+				if ((implFlags & IMPLTYPEFLAG_FDEFAULT) && (implFlags & IMPLTYPEFLAG_FSOURCE)) {
+					sourceIdx = j;
+				}
+			}
+
+			pImplTI->Release();
+		}
+
+		// If this coclass implements our dispatch AND has a source interface
+		if (foundDispatch && sourceIdx != (UINT)-1) {
+			msgf("GetEventIIDFromTypeLib: coclass[%u] has source at impl[%u]", i, sourceIdx);
+
+			HREFTYPE hRef = 0;
+			if (SUCCEEDED(pCoClassTI->GetRefTypeOfImplType(sourceIdx, &hRef))) {
+				ITypeInfo* pEventTI = nullptr;
+				if (SUCCEEDED(pCoClassTI->GetRefTypeInfo(hRef, &pEventTI)) && pEventTI) {
+					TYPEATTR* pEventTA = nullptr;
+					if (SUCCEEDED(pEventTI->GetTypeAttr(&pEventTA)) && pEventTA) {
+						*pOutIID = pEventTA->guid;
+						DumpIID("GetEventIIDFromTypeLib: event IID", *pOutIID);
+						pEventTI->ReleaseTypeAttr(pEventTA);
+						if (ppOutEventTI) {
+							*ppOutEventTI = pEventTI;
 						}
-						pEventTI->Release();
+						else {
+							pEventTI->Release();
+						}
+						pCoClassTI->ReleaseTypeAttr(pTA);
+						pCoClassTI->Release();
+						pTL->Release();
+						pDisp->Release();
+						msg("GetEventIIDFromTypeLib: success");
+						return S_OK;
 					}
+					pEventTI->Release();
 				}
 			}
 		}
@@ -419,7 +555,6 @@ static HRESULT GetEventIIDFromTypeLib(IUnknown* pUnk, IID* pOutIID, ITypeInfo** 
 	}
 
 	pTL->Release();
-	pTI->Release();
 	pDisp->Release();
 	msg("GetEventIIDFromTypeLib: no event interface found");
 	return E_FAIL;
@@ -544,8 +679,25 @@ static HRESULT GetDefaultSourceIID(IUnknown* pUnk, IID* pOutIID, ITypeInfo** ppO
 	// Last resort: Try to find event IID from typelib
 	msg("GetDefaultSourceIID: trying typelib scan...");
 	hr = GetEventIIDFromTypeLib(pUnk, pOutIID, ppOutEventTI);
+	if (SUCCEEDED(hr)) {
+		msg("GetDefaultSourceIID: success via typelib scan");
+		return hr;
+	}
 	msgf("GetDefaultSourceIID: typelib scan returned 0x%08X", hr);
-	return hr;
+
+	// Final fallback : VB6 intrinsic control lookup
+	// DISABLED: VB6 intrinsics use vtable-based events, not IDispatch. See header comment.
+	// msg("GetDefaultSourceIID: trying VB6 intrinsic lookup...");
+	// hr = GetVB6IntrinsicEventIID(pUnk, pOutIID);
+	// if (SUCCEEDED(hr)) {
+	//     if (ppOutEventTI) *ppOutEventTI = nullptr;
+	//     msg("GetDefaultSourceIID: success via VB6 intrinsic lookup");
+	//     return hr;
+	// }
+	// msgf("GetDefaultSourceIID: VB6 intrinsic lookup returned 0x%08X", hr);
+
+
+	return E_FAIL;
 }
 
 // ========================== Connection Point Helpers ==========================
